@@ -3,6 +3,54 @@
     const menuToggle = document.querySelector('.menu-toggle');
     const contactForm = document.getElementById('contactForm');
 
+    const SUPABASE_URL = typeof window.SUPABASE_URL === 'string' ? window.SUPABASE_URL.trim() : '';
+    const SUPABASE_ANON_KEY = typeof window.SUPABASE_ANON_KEY === 'string' ? window.SUPABASE_ANON_KEY.trim() : '';
+    const USERS_TABLE = typeof window.SUPABASE_USERS_TABLE === 'string' && window.SUPABASE_USERS_TABLE.trim()
+        ? window.SUPABASE_USERS_TABLE.trim()
+        : 'users';
+    const supabaseLibrary = window.supabase;
+    const isSupabaseReady = Boolean(
+        SUPABASE_URL &&
+        SUPABASE_ANON_KEY &&
+        supabaseLibrary &&
+        typeof supabaseLibrary.createClient === 'function'
+    );
+
+    let supabaseClient = null;
+
+    function getSupabaseClient() {
+        if (!isSupabaseReady) {
+            throw new Error('Supabase is not configured. Check supabase-config.js.');
+        }
+
+        if (!supabaseClient) {
+            supabaseClient = supabaseLibrary.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+        }
+
+        return supabaseClient;
+    }
+
+    function isValidEmail(email) {
+        return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+    }
+
+    function toUserErrorMessage(error) {
+        const message = error && error.message ? error.message : '';
+        return message || 'Something went wrong.';
+    }
+
+    function getSupabaseErrorMessage(error, fallbackMessage) {
+        if (!error) {
+            return fallbackMessage;
+        }
+
+        if (error.code === '23505' || String(error.message).toLowerCase().includes('duplicate')) {
+            return 'Email already registered.';
+        }
+
+        return error.message || fallbackMessage;
+    }
+
     window.toggleMenu = function toggleMenu() {
         if (navbar) {
             navbar.classList.toggle('active');
@@ -66,27 +114,46 @@
             };
 
             try {
-                const response = await fetch('http://localhost:5000/api/users', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(payload)
-                });
-
-                let data = {};
-                try {
-                    data = await response.json();
-                } catch {
-                    data = {};
+                if (!payload.name || !payload.email) {
+                    throw new Error('Name and email are required.');
                 }
 
-                if (!response.ok) {
-                    throw new Error(data.error || 'Failed to send message.');
+                if (!isValidEmail(payload.email)) {
+                    throw new Error('Invalid email format.');
+                }
+
+                const supabase = getSupabaseClient();
+
+                const { data: existingRows, error: existingError } = await supabase
+                    .from(USERS_TABLE)
+                    .select('id')
+                    .eq('email', payload.email)
+                    .limit(1);
+
+                if (existingError) {
+                    throw new Error(getSupabaseErrorMessage(existingError, 'Could not validate email.'));
+                }
+
+                if (existingRows && existingRows.length > 0) {
+                    throw new Error('Email already exists.');
+                }
+
+                const { error: insertError } = await supabase
+                    .from(USERS_TABLE)
+                    .insert({
+                        name: payload.name,
+                        email: payload.email,
+                        message: payload.message
+                    });
+
+                if (insertError) {
+                    throw new Error(getSupabaseErrorMessage(insertError, 'Failed to send message.'));
                 }
 
                 showNotification('Message saved to database.', 'success');
                 this.reset();
             } catch (error) {
-                showNotification(error.message || 'Something went wrong.', 'error');
+                showNotification(toUserErrorMessage(error), 'error');
             } finally {
                 if (submitButton) {
                     submitButton.textContent = originalText;
